@@ -1,0 +1,80 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq apksigner zipalign unzip zip >/dev/null
+          curl -sSL -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar
+          curl -sSL -o APKEditor.jar https://github.com/REAndroid/APKEditor/releases/download/V1.4.3/APKEditor-1.4.3.jar
+          curl -sSL -o uber-apk-signer.jar https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar
+          ls -la *.jar
+
+      - name: Decompile base.apk
+        run: |
+          java -Xmx4g -jar apktool.jar d -f -q -o dec apks/base.apk || java -Xmx4g -jar apktool.jar d -f -o dec apks/base.apk
+          echo "--- dex dirs ---"
+          ls -d dec/smali* 2>/dev/null
+          du -sh dec
+
+      - name: AUDIT licensing references
+        run: |
+          echo "=========== manifest license bits ==========="
+          grep -n -i -E "CHECK_LICENSE|licensing|vending" dec/AndroidManifest.xml | head -40
+
+          echo
+          echo "=========== classes outside the licensing pkg that touch it ==========="
+          grep -rl "vending/licensing" dec/smali* | grep -v "/com/google/android/vending/" | sed 's#^#FILE #' | head -60
+
+          echo
+          echo "=========== call sites (invoke to licensing) ==========="
+          grep -rn -E "Lcom/google/android/vending/licensing/[A-Za-z]+;->" dec/smali* | grep -v "smali/com/google/android/vending" | head -80
+
+          echo
+          echo "=========== licensing package class list ==========="
+          find dec -path "*com/google/android/vending/licensing/*" -name "*.smali" | sed 's#dec/##' | head -60
+
+      - name: Dump licensing internals
+        run: |
+          for f in $(find dec -path "*com/google/android/vending/licensing/*" -name "*.smali"); do
+            echo "########## $f"
+            grep -n -E "^\.method|^\.class" "$f" | head -40
+          done | head -400
+
+      - name: Merge split APKs into universal
+        run: |
+          mkdir -p in
+          cp apks/base.apk apks/split_config.arm64_v8a.apk apks/split_config.xxhdpi.apk in/
+          java -Xmx4g -jar APKEditor.jar m -i in -o universal.apk -f || true
+          ls -la universal.apk 2>/dev/null || echo "MERGE FAILED"
+
+      - name: Sign (test pipeline)
+        run: |
+          mkdir -p out
+          cp universal.apk out/ 2>/dev/null || true
+          java -jar uber-apk-signer.jar -a out -o signed --allowResign -ksa sha384 2>&1 | tail -25
+          ls -la signed 2>/dev/null
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-${{ github.run_number }}
+          path: |
+            signed/*.apk
+            universal.apk
+          if-no-files-found: warn
+          retention-days: 5
