@@ -1,0 +1,33 @@
+name: export-smali
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: tooling
+        run: curl -sSL -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar
+      - name: decompile
+        run: |
+          java -Xmx4g -jar apktool.jar d -f -q -o dec apks/base.apk || java -Xmx4g -jar apktool.jar d -f -o dec apks/base.apk
+      - name: pack smali only
+        run: |
+          mkdir -p exp
+          cp -r dec/smali exp/ 2>/dev/null || true
+          for d in dec/smali_classes*; do cp -r "$d" exp/; done
+          cp dec/AndroidManifest.xml exp/
+          tar czf smali-export.tgz -C exp .
+          du -h smali-export.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smali-export
+          path: smali-export.tgz
+          retention-days: 3
