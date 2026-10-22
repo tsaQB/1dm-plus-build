@@ -1,0 +1,43 @@
+name: verify
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: download release apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern '*.apk' --dir dl --clobber
+          ls -la dl
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: decompile
+        run: |
+          curl -sSL -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar
+          APK=$(ls dl/*.apk | head -1)
+          java -Xmx6g -jar apktool.jar d -f -q -o d "$APK"
+
+      - name: show patched methods
+        run: |
+          echo "===== LinkApp.isLinked ====="
+          awk '/^\.method public isLinked\(\)Z/,/^\.end method/' d/smali/com/google/android/vending/licensing/LinkApp.smali
+          echo "===== MainActivity license dialog ====="
+          awk '/^\.method public final synthetic ۦۤۢ\(Z\)V/,/^\.end method/' d/smali_classes3/idm/internet/download/manager/MainActivity.smali
+
+      - name: assert
+        run: |
+          set -e
+          A=$(awk '/^\.method public isLinked\(\)Z/,/^\.end method/' d/smali/com/google/android/vending/licensing/LinkApp.smali)
+          echo "$A" | grep -q "const/4 v0, 0x1" || { echo "PATCH A MISSING"; exit 1; }
+          B=$(awk '/^\.method public final synthetic ۦۤۢ\(Z\)V/,/^\.end method/' d/smali_classes3/idm/internet/download/manager/MainActivity.smali)
+          echo "$B" | grep -q "return-void" || { echo "PATCH B MISSING"; exit 1; }
+          echo "BOTH PATCHES PRESENT IN RELEASED APK"
