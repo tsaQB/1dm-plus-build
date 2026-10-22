@@ -1,1 +1,11 @@
-!*.apk
+smali/
+smali_classes2/
+smali_classes3/
+smali-pkg/
+AndroidManifest.xml
+dec/
+in/
+out/
+*.jks
+*.apk
+!apks/*.apk

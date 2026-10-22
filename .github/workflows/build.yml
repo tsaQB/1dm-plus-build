@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,37 +24,56 @@ jobs:
           sudo apt-get install -y -qq apksigner zipalign unzip zip >/dev/null
           curl -sSL -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar
           curl -sSL -o APKEditor.jar https://github.com/REAndroid/APKEditor/releases/download/V1.4.3/APKEditor-1.4.3.jar
-          curl -sSL -o uber-apk-signer.jar https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar
 
-      - name: Decompile base.apk
+      - name: Merge splits -> universal APK
         run: |
-          java -Xmx4g -jar apktool.jar d -f -q -o dec apks/base.apk || java -Xmx4g -jar apktool.jar d -f -o dec apks/base.apk
-          ls dec | head
+          mkdir -p in
+          cp apks/base.apk apks/split_config.arm64_v8a.apk apks/split_config.xxhdpi.apk in/
+          java -Xmx4g -jar APKEditor.jar m -i in -o universal.apk -f
+          ls -la universal.apk
 
-      - name: DUMP AppLinker
+      - name: Decompile universal
         run: |
-          echo "########## AppLinker.smali"
-          sed -n '1,400p' dec/smali/com/google/android/vending/licensing/AppLinker.smali
+          java -Xmx6g -jar apktool.jar d -f -q -o dec universal.apk || java -Xmx6g -jar apktool.jar d -f -o dec universal.apk
+          grep -n "isLinked()Z" dec/smali/com/google/android/vending/licensing/LinkApp.smali | head
+          grep -n "ۦۤۢ(Z)V" dec/smali_classes3/idm/internet/download/manager/MainActivity.smali | head
 
-      - name: DUMP LinkApp + PreferenceLinker + AppTypee
-        run: |
-          for f in LinkApp PreferenceLinker AppTypee Linker AppLinkerCallback; do
-            echo "########## $f.smali"
-            sed -n '1,260p' dec/smali/com/google/android/vending/licensing/$f.smali
-          done
+      - name: Apply license patches
+        run: python3 patch.py dec
 
-      - name: DUMP caller a.smali
+      - name: Rebuild
         run: |
-          echo "### size:"; wc -l dec/smali_classes3/idm/internet/download/manager/a.smali
-          sed -n '1,320p' dec/smali_classes3/idm/internet/download/manager/a.smali
+          java -Xmx6g -jar apktool.jar b dec -o patched-unsigned.apk
+          ls -la patched-unsigned.apk
 
-      - name: DUMP caller UZ.smali region
+      - name: Keystore
         run: |
-          echo "### size:"; wc -l dec/smali/i/UZ.smali
-          sed -n '5400,5560p' dec/smali/i/UZ.smali
+          keytool -genkeypair -noprompt -keystore key.jks -storepass 1dm12345 -keypass 1dm12345 \
+            -alias 1dm -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=1DM Plus Mod, O=local, C=ID" 2>&1 | tail -3
 
-      - name: DUMP MainActivity license refs
+      - name: Zipalign + sign
         run: |
-          grep -n -B6 -A12 "vending/licensing" dec/smali_classes3/idm/internet/download/manager/MainActivity.smali | head -120
-          echo "----- a\$b -----"
-          grep -n -B6 -A12 "vending/licensing" 'dec/smali_classes3/idm/internet/download/manager/a$b.smali' | head -80
+          mkdir -p out
+          zipalign -p -f 4 patched-unsigned.apk aligned.apk
+          apksigner sign --ks key.jks --ks-pass pass:1dm12345 --key-pass pass:1dm12345 \
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out out/1DM_Plus_18.2_unlocked.apk aligned.apk
+          apksigner verify --print-certs --verbose out/1DM_Plus_18.2_unlocked.apk | head -20
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 1dm-unlocked
+          path: out/1DM_Plus_18.2_unlocked.apk
+          retention-days: 14
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v18.2-unlocked-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" out/1DM_Plus_18.2_unlocked.apk \
+            --title "1DM+ 18.2 (license-link bypass)" \
+            --notes "Merged universal APK, Play link/license check bypassed, debug-signed." \
+            --repo "$GITHUB_REPOSITORY"
